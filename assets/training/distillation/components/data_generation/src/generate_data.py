@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from common.constants import (
     COMPONENT_NAME,
     COT_SYSTEM_PROMPT,
+    COD_SYSTEM_PROMPT,
     DEFAULT_REQUEST_BATCH_SIZE,
     DEFAULT_SUCCESS_RATIO,
     DEFAULT_MAX_NEW_TOKENS,
@@ -182,6 +183,14 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--enable_chain_of_density",
+        type=str,
+        required=False,
+        default="false",
+        help="Enable chain of density method for summarization tasks"
+    )
+
+    parser.add_argument(
         "--data_generation_task_type",
         type=str,
         required=True,
@@ -241,6 +250,7 @@ def generate_synthetic_data(
     request_batch_size: int,
     min_endpoint_success_ratio: float,
     enable_cot: bool,
+    enable_cod: bool,
     generated_train_file_path: Path,
     generated_validation_file_path: Path,
     train_file_path: Path,
@@ -390,6 +400,12 @@ def generate_synthetic_data(
         cot_system_message = {'role': 'system', 'content': COT_SYSTEM_PROMPT}
         return [(cot_system_message if message['role'] == 'system' else message) for message in messages]
 
+    # Applies the COD system prompt to the task
+    def replace_cod_system_message(messages: List[dict]) -> List[dict]:
+        # Applicable only for summarization task
+        cod_system_message = {'role': 'system', 'content': COD_SYSTEM_PROMPT}
+        return [(cod_system_message if message['role'] == 'system' else message) for message in messages]
+
     def batch_process_conversation_data(input_file_path: Path, output_file_path: Path, batch_size: int) -> None:
         """Batch process data and do a bulk request to teacher model endpoint.
 
@@ -492,6 +508,7 @@ def generate_synthetic_data(
                 for idx, row in batch.iterrows():
                     messages = row.iloc[0]
                     messages = replace_cot_system_message(messages) if enable_cot else messages
+                    messages = replace_cod_system_message(messages) if enable_cod else messages
                     request_data = {
                         "messages": messages,
                         **inference_params,
@@ -502,6 +519,7 @@ def generate_synthetic_data(
                             process_request,
                             idx,
                             enable_cot,
+                            enable_cod,
                             request_data,
                             teacher_model_endpoint_url,
                             teacher_model_endpoint_key
@@ -589,6 +607,7 @@ def data_import(args: Namespace):
     request_batch_size = args.request_batch_size
     min_endpoint_success_ratio = args.min_endpoint_success_ratio
     enable_cot_str = args.enable_chain_of_thought
+    enable_cod_str = args.enable_chain_of_density
     data_generation_task_type = args.data_generation_task_type
 
     # validate file formats
@@ -596,6 +615,7 @@ def data_import(args: Namespace):
     logger.info("File format validation successful.")
 
     enable_cot = True if enable_cot_str.lower() == "true" else False
+    enable_cod = True if enable_cod_str.lower() == "true" else False
     mlclient_ws = get_workspace_mlclient()
     if not mlclient_ws:
         raise Exception("Could not create MLClient for current workspace")
@@ -627,6 +647,9 @@ def data_import(args: Namespace):
         raise Exception(
             f"Invalid request_batch_size. Value should be 0<=val<={MAX_BATCH_SIZE}, but it is {request_batch_size}")
 
+    if enable_cod and data_generation_task_type != DataGenerationTaskType.SUMMARIZATION:
+        raise ACFTUserError(f"enable_cod option is only applicable for Summarization task type")
+
     inference_params = {
         MAX_NEW_TOKENS: teacher_model_max_new_tokens,
         TEMPERATURE: teacher_model_temperature,
@@ -655,6 +678,7 @@ def data_import(args: Namespace):
         request_batch_size=request_batch_size,
         min_endpoint_success_ratio=min_endpoint_success_ratio,
         enable_cot=enable_cot,
+        enable_cod=enable_cod,
         generated_train_file_path=generated_train_file_path,
         generated_validation_file_path=generated_validation_file_path,
         train_file_path=train_file_path,
